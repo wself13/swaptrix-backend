@@ -1,90 +1,102 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
-const dotenv = require('dotenv');
-
-dotenv.config();
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
+require('dotenv').config();
 
 const app = express();
 
-// CORS — разрешаем фронтенд
 app.use(cors({
-  origin: 'https://swaptrix-frontend.vercel.app',
+  origin: 'http://localhost:3000', // потом замени на Vercel URL
   credentials: true
 }));
 app.use(express.json());
 
-// Хранилище пользователей (в памяти, для теста)
-const users = [];
+// MongoDB
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.log('DB Error:', err));
 
-// Регистрация
-app.post('/api/auth/register', (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password required' });
-  }
-
-  if (users.find(u => u.email === email)) {
-    return res.status(400).json({ error: 'User already exists' });
-  }
-
-  users.push({ email, password, verified: false });
-  console.log('Registered:', email);
-  res.json({ message: 'Check your email for verification' });
+// User Schema
+const userSchema = new mongoose.Schema({
+  email: { type: String, unique: true },
+  password: String,
+  verified: { type: Boolean, default: false },
+  verifyToken: String
 });
 
-// Логин
-app.post('/api/auth/login', (req, res) => {
+const User = mongoose.model('User', userSchema);
+
+// Email Transporter
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+// Register
+app.post('/api/auth/register', async (req, res) => {
   const { email, password } = req.body;
-  const user = users.find(u => u.email === email && u.password === password);
+  if (!email || !password) return res.status(400).json({ error: 'Fill all fields' });
 
-  if (!user) {
-    return res.status(400).json({ error: 'Invalid credentials' });
-  }
+  const exists = await User.findOne({ email });
+  if (exists) return res.status(400).json({ error: 'User exists' });
 
-  if (!user.verified) {
-    return res.status(400).json({ error: 'Email not verified' });
-  }
+  const hashed = await bcrypt.hash(password, 10);
+  const token = Math.random().toString(36).substring(2, 15);
 
-  res.json({ 
-    message: 'Login successful', 
-    token: 'fake-jwt-token-12345',
-    user: { email: user.email }
+  const user = new User({ email, password: hashed, verifyToken: token });
+  await user.save();
+
+  // Send Email
+  const verifyUrl = `http://localhost:5000/api/auth/verify/${token}`;
+  await transporter.sendMail({
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: 'Swaptrix — Verify Email',
+    html: `<h3>Click to verify:</h3><a href="${verifyUrl}">${verifyUrl}</a>`
   });
+
+  res.json({ message: 'Check your email' });
 });
 
-// Верификация — АВТОМАТИЧЕСКАЯ (для теста)
-app.get('/api/auth/verify/:token', (req, res) => {
-  const lastUser = users[users.length - 1];
-  if (lastUser && !lastUser.verified) {
-    lastUser.verified = true;
-    console.log('Email verified for:', lastUser.email);
-    return res.json({ message: 'Email verified!' });
-  }
-  res.status(400).json({ error: 'No user to verify or already verified' });
+// Verify
+app.get('/api/auth/verify/:token', async (req, res) => {
+  const user = await User.findOne({ verifyToken: req.params.token });
+  if (!user) return res.status(400).json({ error: 'Invalid token' });
+
+  user.verified = true;
+  user.verifyToken = null;
+  await user.save();
+
+  res.json({ message: 'Email verified! You can login.' });
 });
 
-// Главная
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+  if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) return res.status(400).json({ error: 'Invalid credentials' });
+
+  if (!user.verified) return res.status(400).json({ error: 'Verify email first' });
+
+  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  res.json({ message: 'Login successful', token, user: { email: user.email } });
+});
+
+// Test
 app.get('/', (req, res) => {
-  res.json({ 
-    message: 'Welcome to Swaptrix API', 
-    status: 'LIVE',
-    users_count: users.length
-  });
+  res.json({ message: 'Swaptrix Backend LIVE', api: '/api/auth/*' });
 });
 
-app.get('/api', (req, res) => {
-  res.json({ status: 'API is running', version: '1.0.0' });
-});
-
-// 404
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
-});
-
-// Запуск
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Server LIVE on port ${PORT}`);
-  console.log(`Visit: https://swaptrix-backend.onrender.com`);
+  console.log(`Server: http://localhost:${PORT}`);
 });
