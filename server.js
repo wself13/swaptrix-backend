@@ -2,8 +2,6 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/user');
 const path = require('path');
 
 dotenv.config();
@@ -24,9 +22,23 @@ app.get('/api', (req, res) => {
   res.json({ status: 'API is running', version: '1.0.0' });
 });
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/user', userRoutes);
+// Динамическая загрузка маршрутов (если файлы есть)
+let authRoutes, userRoutes;
+try {
+  authRoutes = require('./routes/auth');
+  app.use('/api/auth', authRoutes);
+  console.log('Auth routes loaded');
+} catch (err) {
+  console.log('Auth routes not found:', err.message);
+}
+
+try {
+  userRoutes = require('./routes/user');
+  app.use('/api/user', userRoutes);
+  console.log('User routes loaded');
+} catch (err) {
+  console.log('User routes not found:', err.message);
+}
 
 // Serve uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
